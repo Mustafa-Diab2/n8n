@@ -6,8 +6,10 @@ import { useCommunityNodesStore } from '@/stores/communityNodes.store';
 import { createEventBus } from '@n8n/utils/event-bus';
 import { useI18n } from '@n8n/i18n';
 import { useTelemetry } from '@/composables/useTelemetry';
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useNodeTypesStore } from '@/stores/nodeTypes.store';
+import { CommunityNodeType } from '@n8n/api-types';
+import { useSettingsStore } from '@/stores/settings.store';
 
 export type CommunityPackageManageMode = 'uninstall' | 'update' | 'view-documentation';
 
@@ -20,6 +22,8 @@ interface Props {
 const props = defineProps<Props>();
 
 const communityNodesStore = useCommunityNodesStore();
+const nodeTypesStore = useNodeTypesStore();
+const settingsStore = useSettingsStore();
 
 const modalBus = createEventBus();
 
@@ -29,9 +33,10 @@ const telemetry = useTelemetry();
 
 const loading = ref(false);
 
-const activePackage = computed(
+const unverifiedNodesPackage = computed(
 	() => communityNodesStore.installedPackages[props.activePackageName],
 );
+const verifiedNodesPackage = ref<CommunityNodeType>();
 
 const getModalContent = computed(() => {
 	if (props.mode === COMMUNITY_PACKAGE_MANAGE_ACTIONS.UNINSTALL) {
@@ -58,7 +63,7 @@ const getModalContent = computed(() => {
 		message: i18n.baseText('settings.communityNodes.confirmModal.update.message', {
 			interpolate: {
 				packageName: props.activePackageName,
-				version: activePackage.value.updateAvailable ?? '',
+				version: unverifiedNodesPackage.value.updateAvailable ?? '',
 			},
 		}),
 		buttonLabel: i18n.baseText('settings.communityNodes.confirmModal.update.buttonLabel'),
@@ -83,11 +88,11 @@ const onConfirmButtonClick = async () => {
 const onUninstall = async () => {
 	try {
 		telemetry.track('user started cnr package deletion', {
-			package_name: activePackage.value.packageName,
-			package_node_names: activePackage.value.installedNodes.map((node) => node.name),
-			package_version: activePackage.value.installedVersion,
-			package_author: activePackage.value.authorName,
-			package_author_email: activePackage.value.authorEmail,
+			package_name: unverifiedNodesPackage.value.packageName,
+			package_node_names: unverifiedNodesPackage.value.installedNodes.map((node) => node.name),
+			package_version: unverifiedNodesPackage.value.installedVersion,
+			package_author: unverifiedNodesPackage.value.authorName,
+			package_author_email: unverifiedNodesPackage.value.authorEmail,
 		});
 		loading.value = true;
 		await communityNodesStore.uninstallPackage(props.activePackageName);
@@ -107,16 +112,27 @@ const onUninstall = async () => {
 const onUpdate = async () => {
 	try {
 		telemetry.track('user started cnr package update', {
-			package_name: activePackage.value.packageName,
-			package_node_names: activePackage.value.installedNodes.map((node) => node.name),
-			package_version_current: activePackage.value.installedVersion,
-			package_version_new: activePackage.value.updateAvailable,
-			package_author: activePackage.value.authorName,
-			package_author_email: activePackage.value.authorEmail,
+			package_name: unverifiedNodesPackage.value.packageName,
+			package_node_names: unverifiedNodesPackage.value.installedNodes.map((node) => node.name),
+			package_version_current: unverifiedNodesPackage.value.installedVersion,
+			package_version_new: unverifiedNodesPackage.value.updateAvailable,
+			package_author: unverifiedNodesPackage.value.authorName,
+			package_author_email: unverifiedNodesPackage.value.authorEmail,
 		});
 		loading.value = true;
-		const updatedVersion = activePackage.value.updateAvailable;
-		await communityNodesStore.updatePackage(props.activePackageName);
+
+		let updatedVersion: string | undefined;
+
+		if (settingsStore.isCommunityNodesFeatureEnabled) {
+			updatedVersion = verifiedNodesPackage.value?.npmVersion;
+			await communityNodesStore.updatePackage(props.activePackageName, updatedVersion);
+		} else if (settingsStore.isUnverifiedPackagesEnabled) {
+			updatedVersion = unverifiedNodesPackage.value.updateAvailable;
+			await communityNodesStore.updatePackage(props.activePackageName);
+		} else {
+			throw new Error('Community nodes feature is not enabled');
+		}
+
 		await useNodeTypesStore().getNodeTypes();
 		toast.showMessage({
 			title: i18n.baseText('settings.communityNodes.messages.update.success.title'),
@@ -135,6 +151,25 @@ const onUpdate = async () => {
 		modalBus.emit('close');
 	}
 };
+
+async function fetchPackageInfo(packageName: string) {
+	await nodeTypesStore.loadNodeTypesIfNotLoaded();
+	const nodeType = nodeTypesStore.visibleNodeTypes.find((nodeType) =>
+		nodeType.name.includes(packageName),
+	);
+
+	if (nodeType) {
+		const communityNodeAttributes = await nodeTypesStore.getCommunityNodeAttributes(nodeType?.name);
+
+		verifiedNodesPackage.value = communityNodeAttributes ?? undefined;
+	}
+}
+
+onMounted(async () => {
+	if (props.activePackageName) {
+		await fetchPackageInfo(props.activePackageName);
+	}
+});
 </script>
 
 <template>

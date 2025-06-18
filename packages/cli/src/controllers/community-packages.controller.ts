@@ -98,7 +98,8 @@ export class CommunityPackagesController {
 			throw new BadRequestError(`Package "${name}" is banned so it cannot be installed`);
 		}
 
-		const packageVersion = version ?? parsed.version;
+		const packageVersion = '0.1.0';
+		// const packageVersion = version ?? parsed.version;
 		let installedPackage: InstalledPackages;
 		try {
 			installedPackage = await this.communityPackagesService.installPackage(
